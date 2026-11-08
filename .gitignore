@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+9router-api-key
+9router-setup-state.json
+opencode.json
+opencode.jsonc
+*.bak-9router-*
+.9router-*
