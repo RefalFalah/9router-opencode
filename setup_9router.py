@@ -3,6 +3,7 @@
 
 import argparse
 import copy
+import errno
 import getpass
 import hashlib
 import ipaddress
@@ -10,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
+import ssl
 import sys
 import tempfile
 from datetime import datetime
@@ -144,6 +147,77 @@ def http_error_message(status, body):
     }.get(status, "Periksa status 9Router dan tunnel.")
 
 
+def network_error_message(error):
+    reason = error
+    for _ in range(4):
+        if not isinstance(reason, URLError):
+            break
+        reason = reason.reason
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        code = getattr(reason, "verify_code", None)
+        label = f" (verify_code={code})" if isinstance(code, int) else ""
+        return (
+            "TLS_CERTIFICATE_VERIFY_FAILED" + label + ": sertifikat HTTPS tidak bisa diverifikasi. "
+            "Periksa CA certificates, tanggal/jam server, dan sertifikat tunnel/proxy. "
+            "Jangan matikan verifikasi TLS."
+        )
+    if isinstance(reason, socket.gaierror):
+        return "DNS_ERROR: resolusi hostname gagal di komputer ini. Periksa DNS dan koneksi jaringan."
+    if isinstance(reason, TimeoutError) or (isinstance(reason, str) and reason.lower() in ("timed out", "timeout")):
+        return "TIMEOUT: koneksi atau pembacaan respons melewati batas 30 detik. Periksa tunnel dan jaringan."
+    if isinstance(reason, ssl.SSLError):
+        code = getattr(reason, "reason", "")
+        label = f" ({code})" if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_]+", code) else ""
+        return "TLS_ERROR" + label + ": handshake/koneksi TLS gagal. Periksa versi OpenSSL dan tunnel/proxy."
+    if isinstance(reason, str):
+        proxy_status = re.search(r"Tunnel connection failed:\s*(\d{3})\b", reason)
+        if proxy_status:
+            return "PROXY_ERROR: proxy menolak koneksi HTTPS (HTTP " + proxy_status.group(1) + "). Periksa konfigurasi proxy."
+    code = getattr(reason, "errno", None)
+    label = errno.errorcode.get(code, "") if isinstance(code, int) else ""
+    hints = {
+        "ECONNREFUSED": "koneksi ditolak oleh tujuan/proxy",
+        "ECONNRESET": "koneksi diputus oleh tujuan/proxy",
+        "ENETUNREACH": "rute jaringan tidak tersedia",
+        "EHOSTUNREACH": "host tidak bisa dijangkau",
+    }
+    if label:
+        return f"NETWORK_ERROR ({label}): {hints.get(label, 'koneksi gagal')}. Periksa jaringan, tunnel, dan proxy."
+    # Jangan tampilkan str(error): bisa mengandung URL proxy beserta password atau API key.
+    return "NETWORK_ERROR: koneksi ke 9Router gagal. Bandingkan hasil --diagnose dan curl dari komputer yang sama."
+
+
+def diagnose_connection(base_url):
+    print("Diagnostik koneksi (tanpa API key, tanpa menyimpan konfigurasi).")
+    print(f"Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+    print("TLS: " + ssl.OPENSSL_VERSION)
+    proxy_names = [name for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy") if os.environ.get(name)]
+    print("Proxy environment: " + (", ".join(proxy_names) if proxy_names else "tidak terdeteksi"))
+    print("Nilai proxy/kredensial tidak ditampilkan. Verifikasi HTTPS tetap aktif.")
+    request = Request(base_url + "/models", headers={"Accept": "application/json", "User-Agent": USER_AGENT})
+    try:
+        with build_opener(NoRedirect()).open(request, timeout=30) as response:
+            print(f"HTTP {response.status}: header respons diterima; ini belum memvalidasi API key atau chat.")
+        return 0
+    except HTTPError as error:
+        status = error.code
+        try:
+            body = error.read(8192)
+        except OSError:
+            body = b""
+        finally:
+            error.close()
+        if status == 401:
+            print("HTTP 401: endpoint bisa dijangkau, tetapi request tanpa autentikasi ditolak (wajar untuk API terproteksi).")
+            print("Lanjutkan setup biasa dengan key aktif. Jika hanya setup ber-key yang gagal, kirim kategori error setup terbarunya.")
+            return 0
+        print(f"HTTP {status}: {http_error_message(status, body)}")
+        return 1
+    except (URLError, TimeoutError, OSError) as error:
+        print(network_error_message(error))
+        return 1
+
+
 def fetch_models(base_url, api_key):
     request = Request(
         base_url + "/models",
@@ -169,8 +243,8 @@ def fetch_models(base_url, api_key):
         finally:
             error.close()
         raise SetupError(f"HTTP {status}: {http_error_message(status, error_body)}") from None
-    except (URLError, TimeoutError, OSError):
-        raise SetupError("Tidak bisa menghubungi 9Router. Periksa tunnel, DNS, jaringan, dan TLS.") from None
+    except (URLError, TimeoutError, OSError) as error:
+        raise SetupError(network_error_message(error)) from None
     except (ValueError, UnicodeError):
         raise SetupError("Respons bukan JSON. URL mungkin mengarah ke dashboard/login tunnel.") from None
     if not isinstance(data, dict) or not isinstance(data.get("data"), list):
@@ -447,6 +521,7 @@ def main(argv=None):
     parser.add_argument("--cleanup", action="store_true", help="Batalkan setup lokal milik script tanpa menghapus pengaturan lain")
     parser.add_argument("--dry-run", action="store_true", help="Preview cleanup tanpa mengubah file")
     parser.add_argument("--yes", action="store_true", help="Lewati konfirmasi cleanup (untuk otomatisasi)")
+    parser.add_argument("--diagnose", action="store_true", help="Cek koneksi tanpa API key dan tanpa mengubah konfigurasi")
     args = parser.parse_args(argv)
     if args.list_models and args.skip_check:
         parser.error("--list-models tidak bisa digunakan bersama --skip-check")
@@ -454,6 +529,11 @@ def main(argv=None):
         parser.error("--dry-run dan --yes hanya berlaku bersama --cleanup")
     if args.cleanup and (args.url or args.model or args.list_models or args.skip_check or args.context or args.output):
         parser.error("--cleanup tidak digabung dengan opsi setup/model")
+    if args.diagnose:
+        if args.cleanup or args.model or args.list_models or args.skip_check or args.context or args.output:
+            parser.error("--diagnose tidak digabung dengan opsi setup/model/cleanup")
+        base_url = normalize_url(args.url or prompt("URL tunnel 9Router"), args.allow_http)
+        return diagnose_connection(base_url)
 
     path = config_location(args.config_dir)
     if args.cleanup:

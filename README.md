@@ -157,6 +157,14 @@ Script tidak mengubah konfigurasi global komputer ini sampai benar-benar Anda ja
 
 ## Kalau belum berhasil
 
+Untuk membedakan masalah DNS, TLS/sertifikat, proxy, dan timeout, gunakan diagnostik **tanpa API key**:
+
+```bash
+python3 setup_9router.py --url https://router.example.com/v1 --diagnose
+```
+
+Perintah ini tidak membaca key tersimpan, tidak meminta key, dan tidak mengubah konfigurasi. Nilai environment proxy tidak ditampilkan. `HTTP 401` pada pemeriksaan tanpa autentikasi berarti endpoint HTTP dapat dijangkau, bukan key Anda ditolak. Jika diagnostik tanpa key berhasil tetapi setup biasa gagal, sertakan juga **kategori error setup biasa**: server bisa saja memberi respons berbeda setelah autentikasi.
+
 | Gejala | Yang diperiksa |
 | --- | --- |
 | `401` | Gunakan API key 9Router yang masih aktif. |
@@ -164,6 +172,11 @@ Script tidak mengubah konfigurasi global komputer ini sampai benar-benar Anda ja
 | `403` / respons HTML / redirect login | Periksa izin key, proteksi tunnel, atau Cloudflare Access. Proteksi tambahan bisa memerlukan service token/header tersendiri; script ini hanya memakai Bearer API key. |
 | `404` | URL harus mengarah ke API 9Router; periksa `/v1` dan path prefix reverse proxy. |
 | Tidak bisa terhubung | 9Router/tunnel harus tetap hidup; periksa DNS, firewall, dan sertifikat HTTPS. |
+| `DNS_ERROR` | Resolusi hostname gagal dari komputer tujuan. Periksa DNS di komputer tersebut. |
+| `TLS_CERTIFICATE_VERIFY_FAILED` | Periksa trust store/CA certificates, waktu server, dan sertifikat tunnel/proxy. Jangan memakai `--insecure` atau menonaktifkan verifikasi TLS. |
+| `TLS_ERROR` | Periksa versi OpenSSL dan jalur TLS melalui tunnel/proxy. |
+| `TIMEOUT` | Koneksi atau pembacaan respons melewati 30 detik; bandingkan request tanpa key dan dengan key dari komputer yang sama. |
+| `PROXY_ERROR` / `NETWORK_ERROR` | Periksa konfigurasi proxy dan rute jaringan. Script mengikuti proxy bawaan urllib; tidak mengubah kebijakan proxy secara otomatis. |
 | Model tidak terdaftar | Lihat `--list-models`, gunakan ID persis termasuk prefix provider. Untuk combo yang benar-benar ada tetapi tidak diiklankan, tersedia `--skip-check`; hasilnya belum terverifikasi. |
 | Model lain tetap terpilih | Pilih lewat `/models`; model sesi, agent, konfigurasi project, atau kebijakan managed bisa mengalahkan default global. |
 | Tool/streaming gagal meski setup sukses | Cek dukungan tool calling model dan SSE/timeouts di tunnel. Daftar model berhasil tidak menjamin seluruh fitur API kompatibel. |
