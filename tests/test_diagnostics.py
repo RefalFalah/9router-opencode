@@ -43,6 +43,39 @@ class NetworkDiagnosticsTests(unittest.TestCase):
         self.assertIn("DNS_ERROR", str(captured.exception))
         self.assertNotIn("fake-secret", str(captured.exception))
 
+    def test_configurable_timeout_before_response_headers(self):
+        opener = MagicMock()
+        opener.open.side_effect = URLError(TimeoutError("fake-secret"))
+        with patch.object(setup, "build_opener", return_value=opener):
+            with self.assertRaises(setup.SetupError) as captured:
+                setup.fetch_models("https://router.test/v1", "fake-secret", timeout=120)
+        self.assertEqual(opener.open.call_args.kwargs["timeout"], 120)
+        self.assertIn("120 detik", str(captured.exception))
+        self.assertIn("sebelum header HTTP", str(captured.exception))
+        self.assertNotIn("fake-secret", str(captured.exception))
+
+    def test_timeout_while_reading_models_is_distinguished(self):
+        opener = MagicMock()
+        response = opener.open.return_value.__enter__.return_value
+        response.read.side_effect = TimeoutError("fake-secret")
+        with patch.object(setup, "build_opener", return_value=opener):
+            with self.assertRaises(setup.SetupError) as captured:
+                setup.fetch_models("https://router.test/v1", "fake-secret", timeout=75)
+        self.assertIn("75 detik", str(captured.exception))
+        self.assertIn("saat membaca body daftar model", str(captured.exception))
+        self.assertNotIn("fake-secret", str(captured.exception))
+
+    def test_cli_passes_timeout_to_keyless_diagnosis(self):
+        with patch.object(setup, "diagnose_connection", return_value=0) as diagnosis:
+            result = setup.main(["--url", "https://router.test/v1", "--diagnose", "--timeout", "95"])
+        self.assertEqual(result, 0)
+        diagnosis.assert_called_once_with("https://router.test/v1", timeout=95)
+
+    def test_timeout_must_be_positive(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as captured:
+            setup.main(["--timeout", "0"])
+        self.assertEqual(captured.exception.code, 2)
+
     def test_diagnosis_401_sends_no_key_and_skips_config_and_prompts(self):
         opener = MagicMock()
         opener.open.side_effect = HTTPError(

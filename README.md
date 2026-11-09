@@ -175,11 +175,25 @@ Perintah ini tidak membaca key tersimpan, tidak meminta key, dan tidak mengubah 
 | `DNS_ERROR` | Resolusi hostname gagal dari komputer tujuan. Periksa DNS di komputer tersebut. |
 | `TLS_CERTIFICATE_VERIFY_FAILED` | Periksa trust store/CA certificates, waktu server, dan sertifikat tunnel/proxy. Jangan memakai `--insecure` atau menonaktifkan verifikasi TLS. |
 | `TLS_ERROR` | Periksa versi OpenSSL dan jalur TLS melalui tunnel/proxy. |
-| `TIMEOUT` | Koneksi atau pembacaan respons melewati 30 detik; bandingkan request tanpa key dan dengan key dari komputer yang sama. |
+| `TIMEOUT` | I/O melewati batas tunggu `--timeout` (default 30 detik). Pesan membedakan sebelum header diterima dan saat membaca body daftar model. Lihat pengujian di bawah. |
 | `PROXY_ERROR` / `NETWORK_ERROR` | Periksa konfigurasi proxy dan rute jaringan. Script mengikuti proxy bawaan urllib; tidak mengubah kebijakan proxy secara otomatis. |
 | Model tidak terdaftar | Lihat `--list-models`, gunakan ID persis termasuk prefix provider. Untuk combo yang benar-benar ada tetapi tidak diiklankan, tersedia `--skip-check`; hasilnya belum terverifikasi. |
 | Model lain tetap terpilih | Pilih lewat `/models`; model sesi, agent, konfigurasi project, atau kebijakan managed bisa mengalahkan default global. |
 | Tool/streaming gagal meski setup sukses | Cek dukungan tool calling model dan SSE/timeouts di tunnel. Daftar model berhasil tidak menjamin seluruh fitur API kompatibel. |
+
+### Tanpa key cepat, tetapi setup ber-key timeout
+
+`HTTP 401` tanpa key hanya membuktikan akses awal ke endpoint. Pada versi 9Router yang memakai katalog dinamis, `GET /v1/models` setelah autentikasi dapat mengambil katalog dari provider secara langsung; proses itu bisa lebih lama. Ini **kemungkinan**, bukan bukti bahwa semua timeout pasti disebabkan katalog atau bahwa key Anda valid.
+
+Untuk menguji dengan batas tunggu lebih lama, tanpa melewati pemeriksaan API:
+
+```bash
+python3 setup_9router.py --url https://router.example.com/v1 --timeout 120
+```
+
+Opsi `--timeout` berlaku pada I/O HTTP setup/diagnostik, **bukan** batas waktu total proses atau timeout request chat OpenCode. Timeout di sisi tunnel/server tetap berlaku dan tidak dapat diperpanjang oleh opsi client ini. Script tidak menambah retry otomatis.
+
+Jika tetap timeout, periksa log di **mesin asal yang menjalankan 9Router**, khususnya error pengambilan katalog/provider. Jika memungkinkan, bandingkan pemeriksaan ber-key memakai URL lokal `http://127.0.0.1:20128/v1` dari mesin asal itu sendiri. Jangan memakai localhost di VPS client jika 9Router berjalan di komputer lain. Jika lokal juga lambat, periksa 9Router/provider; jika lokal cepat tetapi tunnel lambat, periksa jalur tunnel. Jangan membagikan key atau log yang belum disensor.
 
 ### Tunnel menolak Python dengan Cloudflare Error 1010
 

@@ -25,6 +25,7 @@ import warnings
 KEY_FILENAME = "9router-api-key"
 STATE_FILENAME = "9router-setup-state.json"
 USER_AGENT = "9router-opencode/1.0"
+DEFAULT_TIMEOUT = 30
 
 
 class SetupError(Exception):
@@ -147,7 +148,7 @@ def http_error_message(status, body):
     }.get(status, "Periksa status 9Router dan tunnel.")
 
 
-def network_error_message(error):
+def network_error_message(error, timeout=DEFAULT_TIMEOUT, stage=None):
     reason = error
     for _ in range(4):
         if not isinstance(reason, URLError):
@@ -164,7 +165,17 @@ def network_error_message(error):
     if isinstance(reason, socket.gaierror):
         return "DNS_ERROR: resolusi hostname gagal di komputer ini. Periksa DNS dan koneksi jaringan."
     if isinstance(reason, TimeoutError) or (isinstance(reason, str) and reason.lower() in ("timed out", "timeout")):
-        return "TIMEOUT: koneksi atau pembacaan respons melewati batas 30 detik. Periksa tunnel dan jaringan."
+        location = f" {stage}" if stage else " saat koneksi/pembacaan respons"
+        suggestion = (
+            "Untuk uji batas tunggu lebih lama, gunakan --timeout 120."
+            if timeout < 120
+            else "Menambah timeout tidak memperbaiki endpoint yang macet; periksa juga log server dan tunnel."
+        )
+        return (
+            f"TIMEOUT: batas tunggu I/O {timeout} detik tercapai{location}. "
+            "Jika request tanpa key cepat tetapi setup ber-key lambat, periksa katalog provider/log 9Router. "
+            + suggestion
+        )
     if isinstance(reason, ssl.SSLError):
         code = getattr(reason, "reason", "")
         label = f" ({code})" if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_]+", code) else ""
@@ -187,16 +198,17 @@ def network_error_message(error):
     return "NETWORK_ERROR: koneksi ke 9Router gagal. Bandingkan hasil --diagnose dan curl dari komputer yang sama."
 
 
-def diagnose_connection(base_url):
+def diagnose_connection(base_url, timeout=DEFAULT_TIMEOUT):
     print("Diagnostik koneksi (tanpa API key, tanpa menyimpan konfigurasi).")
     print(f"Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
     print("TLS: " + ssl.OPENSSL_VERSION)
     proxy_names = [name for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy") if os.environ.get(name)]
     print("Proxy environment: " + (", ".join(proxy_names) if proxy_names else "tidak terdeteksi"))
     print("Nilai proxy/kredensial tidak ditampilkan. Verifikasi HTTPS tetap aktif.")
+    print(f"Batas tunggu I/O HTTP: {timeout} detik.")
     request = Request(base_url + "/models", headers={"Accept": "application/json", "User-Agent": USER_AGENT})
     try:
-        with build_opener(NoRedirect()).open(request, timeout=30) as response:
+        with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
             print(f"HTTP {response.status}: header respons diterima; ini belum memvalidasi API key atau chat.")
         return 0
     except HTTPError as error:
@@ -214,11 +226,11 @@ def diagnose_connection(base_url):
         print(f"HTTP {status}: {http_error_message(status, body)}")
         return 1
     except (URLError, TimeoutError, OSError) as error:
-        print(network_error_message(error))
+        print(network_error_message(error, timeout, "sebelum header HTTP diterima"))
         return 1
 
 
-def fetch_models(base_url, api_key):
+def fetch_models(base_url, api_key, timeout=DEFAULT_TIMEOUT):
     request = Request(
         base_url + "/models",
         headers={
@@ -227,8 +239,10 @@ def fetch_models(base_url, api_key):
             "User-Agent": USER_AGENT,
         },
     )
+    stage = "sebelum header HTTP diterima"
     try:
-        with build_opener(NoRedirect()).open(request, timeout=30) as response:
+        with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+            stage = "saat membaca body daftar model"
             # Batasi respons salah konfigurasi; jangan cetak body yang mungkin sensitif.
             raw = response.read(2 * 1024 * 1024 + 1)
         if len(raw) > 2 * 1024 * 1024:
@@ -244,7 +258,7 @@ def fetch_models(base_url, api_key):
             error.close()
         raise SetupError(f"HTTP {status}: {http_error_message(status, error_body)}") from None
     except (URLError, TimeoutError, OSError) as error:
-        raise SetupError(network_error_message(error)) from None
+        raise SetupError(network_error_message(error, timeout, stage)) from None
     except (ValueError, UnicodeError):
         raise SetupError("Respons bukan JSON. URL mungkin mengarah ke dashboard/login tunnel.") from None
     if not isinstance(data, dict) or not isinstance(data.get("data"), list):
@@ -522,6 +536,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="Preview cleanup tanpa mengubah file")
     parser.add_argument("--yes", action="store_true", help="Lewati konfirmasi cleanup (untuk otomatisasi)")
     parser.add_argument("--diagnose", action="store_true", help="Cek koneksi tanpa API key dan tanpa mengubah konfigurasi")
+    parser.add_argument("--timeout", type=positive_integer, default=DEFAULT_TIMEOUT, help="Batas tunggu I/O HTTP setup/diagnostik dalam detik (default: 30)")
     args = parser.parse_args(argv)
     if args.list_models and args.skip_check:
         parser.error("--list-models tidak bisa digunakan bersama --skip-check")
@@ -533,7 +548,7 @@ def main(argv=None):
         if args.cleanup or args.model or args.list_models or args.skip_check or args.context or args.output:
             parser.error("--diagnose tidak digabung dengan opsi setup/model/cleanup")
         base_url = normalize_url(args.url or prompt("URL tunnel 9Router"), args.allow_http)
-        return diagnose_connection(base_url)
+        return diagnose_connection(base_url, timeout=args.timeout)
 
     path = config_location(args.config_dir)
     if args.cleanup:
@@ -563,7 +578,8 @@ def main(argv=None):
     models = None
     if not args.skip_check:
         print("Memeriksa koneksi dan API key lewat /v1/models (tanpa request chat)...")
-        models = fetch_models(base_url, api_key)
+        print(f"Batas tunggu I/O HTTP: {args.timeout} detik; katalog provider 9Router dapat membutuhkan waktu.")
+        models = fetch_models(base_url, api_key, timeout=args.timeout)
         print(f"Koneksi OK. Ada {len(models)} model yang terdaftar.")
     if args.list_models:
         for model_id in models:
