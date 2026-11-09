@@ -58,11 +58,17 @@ class ConfigTests(unittest.TestCase):
         provider = result["providers"]["9router"]
         self.assertEqual(provider["package"], "@opencode/ai/providers/openai-compatible")
         self.assertEqual(provider["settings"]["headerTimeout"], 12345)
+        self.assertEqual(provider["headers"]["User-Agent"], setup.USER_AGENT)
         self.assertTrue(provider["settings"]["apiKey"].startswith("{file:"))
         self.assertIn("old", provider["models"])
         self.assertEqual(provider["models"]["cx/coder"]["limit"]["context"], 10000)
         self.assertEqual(result["model"], "9router/cx/coder")
         self.assertNotIn("provider", result)
+
+    def test_preserve_explicit_custom_user_agent_case_insensitively(self):
+        current = {"providers": {"9router": {"headers": {"user-agent": "my-custom-client/2.0", "X-Team": "demo"}}}}
+        result = setup.make_config(current, "https://router.test/v1", "combo", Path("key"))
+        self.assertEqual(result["providers"]["9router"]["headers"], current["providers"]["9router"]["headers"])
 
     def test_optional_limits_and_invalid_shape(self):
         result = setup.make_config({}, "https://router.test/v1", "combo", Path("key"), 32000, 4000)
@@ -151,13 +157,19 @@ class NetworkAndCLITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.seen = []
+        cls.seen_agents = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 cls.seen.append((self.path, self.headers.get("Authorization")))
+                cls.seen_agents.append(self.headers.get("User-Agent"))
                 if self.path == "/v1/models":
-                    self.send_response(200)
-                    body = json.dumps({"data": [{"id": "cx/coder"}, {"id": "combo"}, {"id": "combo"}]}).encode()
+                    if self.headers.get("User-Agent") != setup.USER_AGENT:
+                        self.send_response(403)
+                        body = json.dumps({"cloudflare_error": True, "error_code": 1010}).encode()
+                    else:
+                        self.send_response(200)
+                        body = json.dumps({"data": [{"id": "cx/coder"}, {"id": "combo"}, {"id": "combo"}]}).encode()
                 elif self.path == "/redirect/v1/models":
                     self.send_response(302)
                     self.send_header("Location", "/should-not-receive-key")
@@ -165,6 +177,16 @@ class NetworkAndCLITests(unittest.TestCase):
                 elif self.path == "/html/v1/models":
                     self.send_response(200)
                     body = b"<html>Login page</html>"
+                elif self.path == "/cloudflare/v1/models":
+                    self.send_response(403)
+                    body = json.dumps({
+                        "cloudflare_error": True,
+                        "error_code": 1010,
+                        "detail": "Do not expose this fake-test-key or arbitrary server details",
+                    }).encode()
+                elif self.path == "/forbidden/v1/models":
+                    self.send_response(403)
+                    body = b"Forbidden fake-test-key"
                 else:
                     self.send_response(401)
                     body = b"Do not print server error bodies: fake-test-key"
@@ -188,6 +210,24 @@ class NetworkAndCLITests(unittest.TestCase):
     def test_fetch_sorted_models_and_bearer_auth(self):
         self.assertEqual(setup.fetch_models(self.url + "/v1", "fake-test-key"), ["combo", "cx/coder"])
         self.assertEqual(self.seen[-1], ("/v1/models", "Bearer fake-test-key"))
+        self.assertEqual(self.seen_agents[-1], setup.USER_AGENT)
+
+    def test_cloudflare_signature_error_is_distinct_from_key_errors(self):
+        with self.assertRaises(setup.SetupError) as captured:
+            setup.fetch_models(self.url + "/cloudflare/v1", "fake-test-key")
+        message = str(captured.exception)
+        self.assertIn("Cloudflare Error 1010", message)
+        self.assertIn("User-Agent", message)
+        self.assertNotIn("fake-test-key", message)
+        self.assertNotIn("arbitrary server details", message)
+
+    def test_generic_forbidden_is_not_misdiagnosed_as_cloudflare(self):
+        with self.assertRaises(setup.SetupError) as captured:
+            setup.fetch_models(self.url + "/forbidden/v1", "fake-test-key")
+        message = str(captured.exception)
+        self.assertIn("403", message)
+        self.assertNotIn("1010", message)
+        self.assertNotIn("fake-test-key", message)
 
     def test_no_redirects_and_no_error_body_leaks(self):
         for prefix, message in (("redirect", "redirect"), ("unauthorized", "401"), ("html", "bukan JSON")):

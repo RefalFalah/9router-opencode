@@ -21,6 +21,7 @@ import warnings
 
 KEY_FILENAME = "9router-api-key"
 STATE_FILENAME = "9router-setup-state.json"
+USER_AGENT = "9router-opencode/1.0"
 
 
 class SetupError(Exception):
@@ -116,10 +117,41 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+def http_error_message(status, body):
+    # Baca hanya kode error yang dikenal. Jangan tampilkan body mentah: bisa berisi rahasia.
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeError):
+        payload = None
+    if (
+        status == 403
+        and isinstance(payload, dict)
+        and payload.get("cloudflare_error") is True
+        and payload.get("error_code") == 1010
+    ):
+        return (
+            "Cloudflare Error 1010: identitas HTTP (User-Agent) ditolak sebelum mencapai 9Router. "
+            "Gunakan script terbaru dengan User-Agent aplikasi. Jika masih ditolak, "
+            "hubungi pengelola tunnel untuk mengizinkan klien API; jangan nonaktifkan autentikasi."
+        )
+    if 300 <= status < 400:
+        return "Tunnel melakukan redirect. Gunakan URL API final tanpa halaman login."
+    return {
+        401: "API key ditolak. Periksa key di dashboard 9Router.",
+        403: "Akses ditolak. Periksa izin API key dan kebijakan akses tunnel; 403 saja belum memastikan penyebabnya.",
+        404: "Endpoint /models tidak ditemukan. Periksa URL API dan path /v1.",
+        429: "Terlalu banyak request. Tunggu lalu coba lagi.",
+    }.get(status, "Periksa status 9Router dan tunnel.")
+
+
 def fetch_models(base_url, api_key):
     request = Request(
         base_url + "/models",
-        headers={"Authorization": "Bearer " + api_key, "Accept": "application/json"},
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
     )
     try:
         with build_opener(NoRedirect()).open(request, timeout=30) as response:
@@ -130,18 +162,13 @@ def fetch_models(base_url, api_key):
         data = json.loads(raw)
     except HTTPError as error:
         status = error.code
-        error.close()
-        hints = {
-            401: "API key ditolak. Periksa key di dashboard 9Router.",
-            403: "Akses ditolak. Periksa izin API key dan proteksi tunnel/Cloudflare Access.",
-            404: "Endpoint /models tidak ditemukan. Periksa URL API dan path /v1.",
-            429: "Terlalu banyak request. Tunggu lalu coba lagi.",
-        }
-        if 300 <= status < 400:
-            message = "Tunnel melakukan redirect. Gunakan URL API final tanpa halaman login."
-        else:
-            message = hints.get(status, "Periksa status 9Router dan tunnel.")
-        raise SetupError(f"HTTP {status}: {message}") from None
+        try:
+            error_body = error.read(8192)
+        except OSError:
+            error_body = b""
+        finally:
+            error.close()
+        raise SetupError(f"HTTP {status}: {http_error_message(status, error_body)}") from None
     except (URLError, TimeoutError, OSError):
         raise SetupError("Tidak bisa menghubungi 9Router. Periksa tunnel, DNS, jaringan, dan TLS.") from None
     except (ValueError, UnicodeError):
@@ -170,6 +197,9 @@ def make_config(current, base_url, model, key_path, context=None, output=None):
     provider = object_field(object_field(config, "providers"), "9router")
     provider.setdefault("name", "9Router")
     provider["package"] = "@opencode/ai/providers/openai-compatible"
+    headers = object_field(provider, "headers")
+    if not any(name.lower() == "user-agent" for name in headers):
+        headers["User-Agent"] = USER_AGENT
     settings = object_field(provider, "settings")
     settings.update({"baseURL": base_url, "apiKey": "{file:" + key_path.as_posix() + "}"})
     entry = object_field(object_field(provider, "models"), model)
@@ -494,7 +524,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (SetupError, EOFError, KeyboardInterrupt) as error:
-        print(f"\nSetup dibatalkan: {error or 'input dibatalkan'}.", file=sys.stderr)
+        print(f"\nSetup dibatalkan: {error or 'input dibatalkan'}", file=sys.stderr)
         sys.exit(1)
     except OSError:
         print("\nGagal membaca/menyimpan file. Periksa izin folder konfigurasi.", file=sys.stderr)

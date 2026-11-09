@@ -94,6 +94,21 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.read_config()["model"], "other/original")
         self.assertNotIn("providers", self.read_config())
 
+    def test_upgrade_adds_application_header_and_keeps_cleanup_restore_point(self):
+        self.install({"model": "other/original"})
+        # Simulasikan instalasi versi sebelum ada header aplikasi.
+        previous = self.read_config()
+        del previous["providers"]["9router"]["headers"]
+        self.write_config(previous)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        del state["after_provider"]["value"]["headers"]
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        self.install()
+        self.assertEqual(self.read_config()["providers"]["9router"]["headers"]["User-Agent"], setup.USER_AGENT)
+        setup.cleanup(self.path, yes=True)
+        self.assertEqual(self.read_config()["model"], "other/original")
+        self.assertFalse(self.key.exists())
+
     def test_new_user_default_before_reinstall_becomes_restore_point(self):
         self.install({"model": "other/original"})
         edited = self.read_config()

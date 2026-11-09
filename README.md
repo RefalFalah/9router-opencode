@@ -160,12 +160,23 @@ Script tidak mengubah konfigurasi global komputer ini sampai benar-benar Anda ja
 | Gejala | Yang diperiksa |
 | --- | --- |
 | `401` | Gunakan API key 9Router yang masih aktif. |
+| `403` + Cloudflare Error `1010` / `browser_signature_banned` | Identitas HTTP/User-Agent ditolak di lapisan tunnel, bukan bukti API key salah. Unduh ulang script terbaru; lihat penjelasan di bawah. |
 | `403` / respons HTML / redirect login | Periksa izin key, proteksi tunnel, atau Cloudflare Access. Proteksi tambahan bisa memerlukan service token/header tersendiri; script ini hanya memakai Bearer API key. |
 | `404` | URL harus mengarah ke API 9Router; periksa `/v1` dan path prefix reverse proxy. |
 | Tidak bisa terhubung | 9Router/tunnel harus tetap hidup; periksa DNS, firewall, dan sertifikat HTTPS. |
 | Model tidak terdaftar | Lihat `--list-models`, gunakan ID persis termasuk prefix provider. Untuk combo yang benar-benar ada tetapi tidak diiklankan, tersedia `--skip-check`; hasilnya belum terverifikasi. |
 | Model lain tetap terpilih | Pilih lewat `/models`; model sesi, agent, konfigurasi project, atau kebijakan managed bisa mengalahkan default global. |
 | Tool/streaming gagal meski setup sukses | Cek dukungan tool calling model dan SSE/timeouts di tunnel. Daftar model berhasil tidak menjamin seluruh fitur API kompatibel. |
+
+### Tunnel menolak Python dengan Cloudflare Error 1010
+
+Sebagian tunnel memblokir identitas bawaan library seperti `Python-urllib/...`. Versi terbaru mengirim **`User-Agent: 9router-opencode/1.0`** yang mengidentifikasi aplikasi secara jujur, bukan menyamar sebagai browser. Header yang sama ditambahkan ke provider OpenCode supaya request model tidak bergantung pada User-Agent bawaan klien. Header User-Agent khusus yang sebelumnya Anda pasang sendiri tetap dipertahankan.
+
+Jika error terjadi saat pemeriksaan `/models`, setup **belum menyimpan** konfigurasi/key. Unduh ulang `setup_9router.py` dari URL GitHub di atas dan jalankan lagi; **tidak perlu cleanup atau menghapus konfigurasi OpenCode**. Jika sebelumnya sudah pernah berhasil setup, menjalankan ulang script terbaru memperbarui konfigurasi yang dikelolanya.
+
+Status `401` dengan pesan `API key required for remote API access` saat mengetes **tanpa key** berarti request sudah mencapai 9Router, bukan bukti key Anda salah. Dengan key yang aktif, pemeriksaan tetap perlu dilakukan dari komputer tujuan. Jangan kirim API key ke chat atau memasangnya dalam URL.
+
+Header aplikasi tidak menonaktifkan autentikasi, firewall, atau verifikasi TLS. Jika kebijakan tunnel tetap menolak klien API, hubungi pengelola tunnel agar menyediakan akses API yang sesuai atau gunakan jalur/domain yang Anda kelola. Toggle **Allow dashboard access via tunnel** mengatur akses dashboard; tidak perlu mengaktifkannya untuk mencoba memperbaiki error signature pada API. `--skip-check` juga bukan perbaikan untuk penolakan tunnel.
 
 HTTP remote ditolak secara default. Hanya untuk LAN/VPN tepercaya, tersedia `--allow-http`; API key tetap tidak terenkripsi oleh HTTP. Jangan mematikan verifikasi TLS untuk mengatasi masalah sertifikat.
 
@@ -184,3 +195,4 @@ Referensi:
 - [OpenCode V2: custom providers](https://opencode.ai/docs/providers#custom)
 - [OpenCode: global config dan substitusi file](https://opencode.ai/docs/config)
 - [9Router: API OpenAI-compatible](https://github.com/decolua/9router/blob/master/README.md)
+- [Cloudflare: Error 1010 dan User-Agent aplikasi](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/)
