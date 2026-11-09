@@ -173,7 +173,7 @@ def network_error_message(error, timeout=DEFAULT_TIMEOUT, stage=None):
         )
         return (
             f"TIMEOUT: batas tunggu I/O {timeout} detik tercapai{location}. "
-            "Jika request tanpa key cepat tetapi setup ber-key lambat, periksa katalog provider/log 9Router. "
+            "Jika request tanpa key cepat tetapi pengecekan model ber-key lambat, periksa katalog provider/log 9Router. "
             + suggestion
         )
     if isinstance(reason, ssl.SSLError):
@@ -221,7 +221,7 @@ def diagnose_connection(base_url, timeout=DEFAULT_TIMEOUT):
             error.close()
         if status == 401:
             print("HTTP 401: endpoint bisa dijangkau, tetapi request tanpa autentikasi ditolak (wajar untuk API terproteksi).")
-            print("Lanjutkan setup biasa dengan key aktif. Jika hanya setup ber-key yang gagal, kirim kategori error setup terbarunya.")
+            print("Setup manual bisa dilanjutkan. Validitas key/model baru teruji saat OpenCode mengirim request.")
             return 0
         print(f"HTTP {status}: {http_error_message(status, body)}")
         return 1
@@ -527,25 +527,26 @@ def main(argv=None):
     parser.add_argument("--url", help="URL tunnel, boleh dengan atau tanpa /v1")
     parser.add_argument("--model", help="ID model persis seperti di 9Router, termasuk prefix provider")
     parser.add_argument("--list-models", action="store_true", help="Lihat ID model tanpa menyimpan konfigurasi")
+    parser.add_argument("--check-model", action="store_true", help="Opsional: ambil daftar /models untuk mengecek ID model sebelum menyimpan")
     parser.add_argument("--config-dir", help="Folder konfigurasi global khusus, jika bukan lokasi standar")
     parser.add_argument("--allow-http", action="store_true", help="Izinkan HTTP remote, khusus LAN/VPN tepercaya")
-    parser.add_argument("--skip-check", action="store_true", help="Lewati cek jaringan/model; hasil belum terverifikasi")
+    parser.add_argument("--skip-check", action="store_true", help="Kompatibilitas versi lama: mode manual tanpa cek kini sudah menjadi default")
     parser.add_argument("--context", type=positive_integer, help="Context limit model sebenarnya (token), opsional")
     parser.add_argument("--output", type=positive_integer, help="Output limit model sebenarnya (token), opsional")
     parser.add_argument("--cleanup", action="store_true", help="Batalkan setup lokal milik script tanpa menghapus pengaturan lain")
     parser.add_argument("--dry-run", action="store_true", help="Preview cleanup tanpa mengubah file")
     parser.add_argument("--yes", action="store_true", help="Lewati konfirmasi cleanup (untuk otomatisasi)")
     parser.add_argument("--diagnose", action="store_true", help="Cek koneksi tanpa API key dan tanpa mengubah konfigurasi")
-    parser.add_argument("--timeout", type=positive_integer, default=DEFAULT_TIMEOUT, help="Batas tunggu I/O HTTP setup/diagnostik dalam detik (default: 30)")
+    parser.add_argument("--timeout", type=positive_integer, default=DEFAULT_TIMEOUT, help="Batas tunggu I/O pemeriksaan opsional/diagnostik dalam detik (default: 30)")
     args = parser.parse_args(argv)
-    if args.list_models and args.skip_check:
-        parser.error("--list-models tidak bisa digunakan bersama --skip-check")
+    if args.skip_check and (args.list_models or args.check_model):
+        parser.error("--skip-check tidak bisa digunakan bersama --list-models atau --check-model")
     if (args.dry_run or args.yes) and not args.cleanup:
         parser.error("--dry-run dan --yes hanya berlaku bersama --cleanup")
-    if args.cleanup and (args.url or args.model or args.list_models or args.skip_check or args.context or args.output):
+    if args.cleanup and (args.url or args.model or args.list_models or args.check_model or args.skip_check or args.context or args.output):
         parser.error("--cleanup tidak digabung dengan opsi setup/model")
     if args.diagnose:
-        if args.cleanup or args.model or args.list_models or args.skip_check or args.context or args.output:
+        if args.cleanup or args.model or args.list_models or args.check_model or args.skip_check or args.context or args.output:
             parser.error("--diagnose tidak digabung dengan opsi setup/model/cleanup")
         base_url = normalize_url(args.url or prompt("URL tunnel 9Router"), args.allow_http)
         return diagnose_connection(base_url, timeout=args.timeout)
@@ -576,11 +577,13 @@ def main(argv=None):
         raise SetupError("API key harus terisi dan tidak boleh mengandung spasi/baris baru/non-ASCII.")
 
     models = None
-    if not args.skip_check:
+    if args.check_model or args.list_models:
         print("Memeriksa koneksi dan API key lewat /v1/models (tanpa request chat)...")
         print(f"Batas tunggu I/O HTTP: {args.timeout} detik; katalog provider 9Router dapat membutuhkan waktu.")
         models = fetch_models(base_url, api_key, timeout=args.timeout)
         print(f"Koneksi OK. Ada {len(models)} model yang terdaftar.")
+    else:
+        print("Mode manual: tidak mengambil daftar model dan tidak melakukan request jaringan saat setup.")
     if args.list_models:
         for model_id in models:
             print(model_id)
@@ -594,7 +597,7 @@ def main(argv=None):
     if models is not None and model not in models:
         raise SetupError(
             "ID model tidak ada di /models. Lihat --list-models. "
-            "Jika combo memang tidak terdaftar, gunakan --skip-check secara sadar."
+            "Untuk input manual tanpa mengecek katalog, jalankan ulang tanpa --check-model."
         )
     key_path = path.parent / KEY_FILENAME
     config = make_config(current, base_url, model, key_path, args.context, args.output)
@@ -607,9 +610,9 @@ def main(argv=None):
     print(f"API key tersimpan terpisah (plaintext, bukan terenkripsi): {key_path}")
     if os.name == "nt":
         print("Windows: lindungi file key dengan izin NTFS akun sendiri; chmod bukan pembatas ACL.")
-    if args.skip_check:
-        print("PERHATIAN: koneksi dan model belum diverifikasi (--skip-check).")
-    print("Cek batas context/output dan dukungan tool model; /models tidak membuktikan kemampuan itu.")
+    if models is None:
+        print("Konfigurasi tersimpan; koneksi, API key, dan model belum diuji. 9Router tetap memvalidasi key saat OpenCode dipakai.")
+    print("Cek batas context/output dan dukungan tool model; setup tidak menguji chat/streaming/tool calling.")
     print("Buka opencode. Untuk sesi lama, gunakan /models lalu pilih model 9Router.")
     print("Konfigurasi dimuat ulang otomatis; gunakan /reload bila belum muncul.")
     print("Untuk melepas setup: jalankan script ini lagi dengan --cleanup (preview: --cleanup --dry-run).")

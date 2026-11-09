@@ -2,6 +2,8 @@
 
 Setup sekali pada setiap komputer/server tempat **OpenCode berjalan**. Setelah itu cukup jalankan `opencode` seperti biasa. Tidak perlu menjalankan 9Router kedua atau login ulang ke provider upstream di komputer tujuan.
 
+**Default: masukkan model secara manual. Setup tidak mengambil daftar model atau menghubungi server sama sekali.** Isi URL tunnel, API key, dan ID model/nama combo; konfigurasi langsung disimpan. Koneksi dan validitas key/model baru teruji saat OpenCode mengirim request. Autentikasi API di server tetap berlaku.
+
 ```text
 OpenCode di PC / VPS lain
         |
@@ -51,6 +53,8 @@ ID model / nama combo 9Router: ID-MODEL-ANDA
 ```
 
 URL boleh dengan atau tanpa `/v1`; script menambahkan `/v1` jika belum ada. Path prefix seperti `https://example.com/ai/v1` juga didukung. Jangan masukkan URL halaman `/dashboard`.
+
+Tidak perlu `--skip-check` atau `--timeout` untuk setup manual. Flag `--skip-check` versi lama tetap diterima untuk kompatibilitas, tetapi sekarang tidak diperlukan.
 
 Setelah berhasil:
 
@@ -110,11 +114,19 @@ python3 setup_9router.py --url https://router.example.com --model ID-MODEL-ANDA
 
 Di Windows, ganti `python3` dengan `python` bila perlu. Pada setup berikutnya, URL dan model konfigurasi sebelumnya ditawarkan sebagai default. Masukkan kembali key ketika diminta; file key tidak ditampilkan.
 
-Untuk melihat ID model yang tersedia, tanpa mengubah konfigurasi:
+**Opsional**, jika memang ingin mengambil ID model dari server, tanpa mengubah konfigurasi:
 
 ```bash
 python3 setup_9router.py --url https://router.example.com --list-models
 ```
+
+**Opsional**, untuk mengecek ID model terhadap katalog server sebelum menyimpan:
+
+```bash
+python3 setup_9router.py --url https://router.example.com --model ID-MODEL-ANDA --check-model
+```
+
+Hanya `--list-models` dan `--check-model` yang mengambil daftar `/v1/models` dengan key. Keduanya bisa lambat jika katalog provider di server lambat. **Jangan tambahkan opsi ini jika ingin setup manual tanpa mengambil daftar.** `--check-model` bukan pemeriksaan satu model secara terpisah: opsi ini tetap mengunduh katalog untuk mencocokkan ID.
 
 Untuk otomatisasi, script juga membaca `NINEROUTER_API_KEY` dari environment. Pasok melalui secret manager/environment yang aman; jangan tempel nilai key dalam perintah yang tersimpan di shell history.
 
@@ -126,7 +138,7 @@ Daftar `/models` umumnya tidak memberi tahu batas context/output atau kemampuan 
 python3 setup_9router.py --url https://router.example.com --model ID-MODEL-ANDA --context 32768 --output 8192
 ```
 
-Angka di atas **contoh**, bukan batas semua model. Bila tidak diberikan, script mempertahankan limit yang sudah dikonfigurasi; untuk model baru OpenCode memakai asumsi default-nya. Sesuaikan sebelum sesi panjang. Gunakan model dan endpoint yang mendukung **tool calling** agar OpenCode dapat memakai tools. Script hanya memeriksa `/models`, **bukan** membuktikan chat, streaming, atau tool calling berhasil, dan tidak melakukan request chat berbayar.
+Angka di atas **contoh**, bukan batas semua model. Bila tidak diberikan, script mempertahankan limit yang sudah dikonfigurasi; untuk model baru OpenCode memakai asumsi default-nya. Sesuaikan sebelum sesi panjang. Gunakan model dan endpoint yang mendukung **tool calling** agar OpenCode dapat memakai tools. Setup manual tidak menguji koneksi/model. Pemeriksaan katalog opsional juga **bukan** bukti chat, streaming, atau tool calling berhasil. Script tidak melakukan request chat berbayar.
 
 ## File yang disimpan
 
@@ -141,7 +153,7 @@ Jika OpenCode memakai lokasi berbeda, cek `opencode debug paths config`, lalu gu
 Script:
 
 1. Membaca `opencode.json` atau `opencode.jsonc` yang sudah ada. Jika keduanya ada, script berhenti agar tidak salah mengedit file.
-2. Mengecek URL, API key, dan ID model melalui `GET /v1/models`.
+2. Memvalidasi format input secara lokal. **Tidak melakukan request jaringan secara default**; `GET /v1/models` hanya dipanggil jika memilih `--check-model`/`--list-models`. Ini bukan verifikasi key atau keberadaan model dalam mode manual.
 3. Menyalin konfigurasi lama ke `opencode.json(c).bak-9router-TIMESTAMP`.
 4. Menambahkan/memperbarui hanya provider `9router`, model yang dipilih, dan model default; pengaturan lainnya tetap ada. Model 9Router lain tetap dipertahankan.
 5. Menyimpan API key ke file **`9router-api-key`**, lalu menggunakan substitusi `{file:...}` di konfigurasi. Key tidak dimasukkan langsung ke JSON.
@@ -163,7 +175,7 @@ Untuk membedakan masalah DNS, TLS/sertifikat, proxy, dan timeout, gunakan diagno
 python3 setup_9router.py --url https://router.example.com/v1 --diagnose
 ```
 
-Perintah ini tidak membaca key tersimpan, tidak meminta key, dan tidak mengubah konfigurasi. Nilai environment proxy tidak ditampilkan. `HTTP 401` pada pemeriksaan tanpa autentikasi berarti endpoint HTTP dapat dijangkau, bukan key Anda ditolak. Jika diagnostik tanpa key berhasil tetapi setup biasa gagal, sertakan juga **kategori error setup biasa**: server bisa saja memberi respons berbeda setelah autentikasi.
+Perintah ini tidak membaca key tersimpan, tidak meminta key, dan tidak mengubah konfigurasi. Nilai environment proxy tidak ditampilkan. `HTTP 401` pada pemeriksaan tanpa autentikasi berarti endpoint HTTP dapat dijangkau, bukan key Anda ditolak. Jika diagnostik tanpa key berhasil tetapi pemeriksaan opsional `--check-model` gagal, sertakan juga **kategori error pemeriksaan**: server bisa saja memberi respons berbeda setelah autentikasi. Setup manual biasa tidak melakukan pemeriksaan jaringan.
 
 | Gejala | Yang diperiksa |
 | --- | --- |
@@ -177,21 +189,23 @@ Perintah ini tidak membaca key tersimpan, tidak meminta key, dan tidak mengubah 
 | `TLS_ERROR` | Periksa versi OpenSSL dan jalur TLS melalui tunnel/proxy. |
 | `TIMEOUT` | I/O melewati batas tunggu `--timeout` (default 30 detik). Pesan membedakan sebelum header diterima dan saat membaca body daftar model. Lihat pengujian di bawah. |
 | `PROXY_ERROR` / `NETWORK_ERROR` | Periksa konfigurasi proxy dan rute jaringan. Script mengikuti proxy bawaan urllib; tidak mengubah kebijakan proxy secara otomatis. |
-| Model tidak terdaftar | Lihat `--list-models`, gunakan ID persis termasuk prefix provider. Untuk combo yang benar-benar ada tetapi tidak diiklankan, tersedia `--skip-check`; hasilnya belum terverifikasi. |
+| Model tidak terdaftar | Gunakan ID persis dari 9Router, termasuk prefix provider bila ada. Setup manual menerima ID tanpa katalog; error saat pemakaian perlu diperiksa di OpenCode/9Router. Jika hanya `--check-model` yang menolak combo yang tidak diiklankan, hilangkan opsi tersebut. |
 | Model lain tetap terpilih | Pilih lewat `/models`; model sesi, agent, konfigurasi project, atau kebijakan managed bisa mengalahkan default global. |
 | Tool/streaming gagal meski setup sukses | Cek dukungan tool calling model dan SSE/timeouts di tunnel. Daftar model berhasil tidak menjamin seluruh fitur API kompatibel. |
 
-### Tanpa key cepat, tetapi setup ber-key timeout
+### Pengecekan katalog opsional timeout
 
 `HTTP 401` tanpa key hanya membuktikan akses awal ke endpoint. Pada versi 9Router yang memakai katalog dinamis, `GET /v1/models` setelah autentikasi dapat mengambil katalog dari provider secara langsung; proses itu bisa lebih lama. Ini **kemungkinan**, bukan bukti bahwa semua timeout pasti disebabkan katalog atau bahwa key Anda valid.
 
-Untuk menguji dengan batas tunggu lebih lama, tanpa melewati pemeriksaan API:
+**Solusi untuk setup saja:** gunakan mode manual biasa tanpa `--check-model` atau `--list-models`. Tidak ada pengambilan katalog yang harus ditunggu; ini tidak menonaktifkan autentikasi saat model dipakai.
+
+Jika tetap ingin menguji katalog, gunakan batas tunggu lebih lama:
 
 ```bash
-python3 setup_9router.py --url https://router.example.com/v1 --timeout 120
+python3 setup_9router.py --url https://router.example.com/v1 --check-model --timeout 120
 ```
 
-Opsi `--timeout` berlaku pada I/O HTTP setup/diagnostik, **bukan** batas waktu total proses atau timeout request chat OpenCode. Timeout di sisi tunnel/server tetap berlaku dan tidak dapat diperpanjang oleh opsi client ini. Script tidak menambah retry otomatis.
+Opsi `--timeout` berlaku pada I/O HTTP pemeriksaan opsional/diagnostik, **bukan** batas waktu total proses atau timeout request chat OpenCode. Opsi ini tidak berpengaruh pada setup manual yang tidak melakukan request. Timeout di sisi tunnel/server tetap berlaku dan tidak dapat diperpanjang oleh opsi client ini. Script tidak menambah retry otomatis.
 
 Jika tetap timeout, periksa log di **mesin asal yang menjalankan 9Router**, khususnya error pengambilan katalog/provider. Jika memungkinkan, bandingkan pemeriksaan ber-key memakai URL lokal `http://127.0.0.1:20128/v1` dari mesin asal itu sendiri. Jangan memakai localhost di VPS client jika 9Router berjalan di komputer lain. Jika lokal juga lambat, periksa 9Router/provider; jika lokal cepat tetapi tunnel lambat, periksa jalur tunnel. Jangan membagikan key atau log yang belum disensor.
 
@@ -199,7 +213,7 @@ Jika tetap timeout, periksa log di **mesin asal yang menjalankan 9Router**, khus
 
 Sebagian tunnel memblokir identitas bawaan library seperti `Python-urllib/...`. Versi terbaru mengirim **`User-Agent: 9router-opencode/1.0`** yang mengidentifikasi aplikasi secara jujur, bukan menyamar sebagai browser. Header yang sama ditambahkan ke provider OpenCode supaya request model tidak bergantung pada User-Agent bawaan klien. Header User-Agent khusus yang sebelumnya Anda pasang sendiri tetap dipertahankan.
 
-Jika error terjadi saat pemeriksaan `/models`, setup **belum menyimpan** konfigurasi/key. Unduh ulang `setup_9router.py` dari URL GitHub di atas dan jalankan lagi; **tidak perlu cleanup atau menghapus konfigurasi OpenCode**. Jika sebelumnya sudah pernah berhasil setup, menjalankan ulang script terbaru memperbarui konfigurasi yang dikelolanya.
+Jika error terjadi saat pemeriksaan `/models` versi lama atau opsi `--check-model`, setup **belum menyimpan** konfigurasi/key. Unduh ulang `setup_9router.py` dari URL GitHub di atas dan jalankan mode manual biasa; **tidak perlu cleanup atau menghapus konfigurasi OpenCode**. Jika sebelumnya sudah pernah berhasil setup, menjalankan ulang script terbaru memperbarui konfigurasi yang dikelolanya.
 
 Status `401` dengan pesan `API key required for remote API access` saat mengetes **tanpa key** berarti request sudah mencapai 9Router, bukan bukti key Anda salah. Dengan key yang aktif, pemeriksaan tetap perlu dilakukan dari komputer tujuan. Jangan kirim API key ke chat atau memasangnya dalam URL.
 

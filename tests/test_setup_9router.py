@@ -241,7 +241,7 @@ class NetworkAndCLITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = io.StringIO()
             with patch.dict(os.environ, {"NINEROUTER_API_KEY": ""}), patch("builtins.input", side_effect=[self.url, "cx/coder"]), patch.object(setup.getpass, "getpass", return_value="fake-test-key"), contextlib.redirect_stdout(output):
-                status = setup.main(["--config-dir", temporary])
+                status = setup.main(["--config-dir", temporary, "--check-model"])
             self.assertEqual(status, 0)
             self.assertNotIn("fake-test-key", output.getvalue())
             config = json.loads((Path(temporary) / "opencode.json").read_text())
@@ -252,7 +252,7 @@ class NetworkAndCLITests(unittest.TestCase):
             setup.main(["--config-dir", temporary, "--url", self.url, "--list-models"])
             self.assertEqual(list(Path(temporary).iterdir()), [])
             with self.assertRaises(setup.SetupError):
-                setup.main(["--config-dir", temporary, "--url", self.url, "--model", "not-listed"])
+                setup.main(["--config-dir", temporary, "--url", self.url, "--model", "not-listed", "--check-model"])
             self.assertEqual(list(Path(temporary).iterdir()), [])
 
     def test_unsafe_key_is_rejected_before_network(self):
